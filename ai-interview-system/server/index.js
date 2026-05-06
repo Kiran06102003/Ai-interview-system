@@ -70,6 +70,27 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// Diagnostic endpoint
+app.get('/api/diagnostic', (req, res) => {
+  const hasApiKey = !!process.env.OPENAI_API_KEY;
+  const apiKeyValid = hasApiKey && !process.env.OPENAI_API_KEY.includes('your-actual') && process.env.OPENAI_API_KEY !== 'sk-test-placeholder';
+  
+  res.json({
+    status: 'diagnostic',
+    timestamp: new Date().toISOString(),
+    openai: {
+      apiKeyConfigured: hasApiKey,
+      apiKeyValid: apiKeyValid,
+      keyPreview: hasApiKey ? process.env.OPENAI_API_KEY.substring(0, 20) + '...' : 'NOT SET',
+    },
+    mongodb: {
+      connected: mongoose.connection.readyState === 1,
+      uri: process.env.MONGODB_URI || 'mongodb://localhost:27017/ai-interview',
+    },
+    environment: process.env.NODE_ENV || 'development',
+  });
+});
+
 // ─── Error Handling ───────────────────────────────────────────────────────────
 app.use(errorHandler);
 

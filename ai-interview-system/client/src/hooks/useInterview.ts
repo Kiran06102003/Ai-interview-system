@@ -154,6 +154,11 @@ export const useInterview = (sessionId: string | null) => {
       if (phase === 'processing') setPhase('question');
     };
 
+    const onWarning = (data: { message: string }) => {
+      console.warn('Server warning:', data.message);
+      setStatusMsg(data.message);
+    };
+
     // Attach listeners
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
@@ -169,6 +174,7 @@ export const useInterview = (sessionId: string | null) => {
     socket.on('interview_complete', onInterviewComplete);
     socket.on('end_interview', onEndInterview);
     socket.on('error', onError);
+    socket.on('warning', onWarning);
 
     // Connect if not already
     if (socket.connected) {
@@ -190,6 +196,7 @@ export const useInterview = (sessionId: string | null) => {
       socket.off('interview_complete', onInterviewComplete);
       socket.off('end_interview', onEndInterview);
       socket.off('error', onError);
+      socket.off('warning', onWarning);
     };
   }, [sessionId]);
 
@@ -206,6 +213,13 @@ export const useInterview = (sessionId: string | null) => {
 
     const socket = socketRef.current;
 
+    // Set a client-side timeout for the processing
+    const processingTimeout = setTimeout(() => {
+      console.warn('Audio processing taking too long');
+      toast.error('Processing is taking too long. Please try the text fallback.');
+      setPhase('question');
+    }, 45000); // 45 seconds timeout
+
     // Convert blob to base64
     const reader = new FileReader();
     reader.onloadend = () => {
@@ -217,6 +231,22 @@ export const useInterview = (sessionId: string | null) => {
         duration,
         textFallback,
       });
+
+      // When we get a successful response, clear the timeout
+      const onSuccess = () => {
+        clearTimeout(processingTimeout);
+        socket.off('answer_analyzed', onSuccess);
+        socket.off('error', onError);
+      };
+
+      const onError = () => {
+        clearTimeout(processingTimeout);
+        socket.off('answer_analyzed', onSuccess);
+        socket.off('error', onError);
+      };
+
+      socket.once('answer_analyzed', onSuccess);
+      socket.once('error', onError);
     };
     reader.readAsDataURL(audioBlob);
   }, [sessionId, currentQuestion]);

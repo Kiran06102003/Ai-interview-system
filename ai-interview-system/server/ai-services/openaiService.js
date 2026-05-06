@@ -187,11 +187,23 @@ Return ONLY a valid JSON object:
 // ─── Transcribe Audio ─────────────────────────────────────────────────────────
 const transcribeAudio = async (audioBuffer, mimeType = 'audio/webm') => {
   try {
-    console.log('Transcribing audio:', { bufferSize: audioBuffer.length, mimeType });
+    console.log('=== TRANSCRIPTION START ===');
+    console.log('Audio details:', { 
+      bufferSize: audioBuffer.length, 
+      mimeType,
+      bufferType: audioBuffer.constructor.name
+    });
 
     if (!audioBuffer || audioBuffer.length === 0) {
       throw new Error('Audio buffer is empty');
     }
+
+    // Check if API key is valid
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey || apiKey.includes('your-actual') || apiKey === 'sk-test-placeholder') {
+      throw new Error('Invalid or missing OpenAI API key in environment variables');
+    }
+    console.log('API key configured:', apiKey.substring(0, 20) + '...');
 
     // Determine file extension from MIME type
     let fileExtension = 'webm';
@@ -199,37 +211,63 @@ const transcribeAudio = async (audioBuffer, mimeType = 'audio/webm') => {
     else if (mimeType.includes('ogg')) fileExtension = 'ogg';
     else if (mimeType.includes('wav')) fileExtension = 'wav';
 
-    // Create a proper File-like object for the OpenAI API
-    // The OpenAI JavaScript SDK expects a File object or similar
-    const filename = `audio.${fileExtension}`;
-    
-    // Use Blob (available in Node.js 18+) or Buffer
-    let fileData;
-    try {
-      // Try using Blob if available
-      fileData = new Blob([audioBuffer], { type: mimeType });
-    } catch (blobErr) {
-      // Fallback: create an object that OpenAI SDK can work with
-      fileData = audioBuffer;
-    }
+    const filename = `audio_${Date.now()}.${fileExtension}`;
+    console.log('Using filename:', filename);
+
+    // Log OpenAI client info
+    console.log('OpenAI client configured:', !!openai, openai?.constructor?.name);
 
     console.log('Calling OpenAI Whisper API...');
     
-    const response = await openai.audio.transcriptions.create({
-      file: fileData,
-      model: 'whisper-1',
-      language: 'en',
-    });
+    const response = await openai.audio.transcriptions.create(
+      {
+        file: audioBuffer,
+        model: 'whisper-1',
+        language: 'en',
+      },
+      {
+        timeout: 30000,
+      }
+    );
 
-    console.log('Transcription successful:', { text: response.text?.substring(0, 100) });
-    return response.text || response;
+    console.log('=== TRANSCRIPTION SUCCESS ===');
+    console.log('Transcription response:', { 
+      hasText: !!response.text,
+      textLength: response.text?.length,
+      textPreview: response.text?.substring(0, 100)
+    });
+    
+    const finalText = response.text || response;
+    if (!finalText || (typeof finalText === 'string' && finalText.trim().length === 0)) {
+      console.warn('Empty transcription result');
+      return '[No audio detected]';
+    }
+
+    return finalText;
   } catch (err) {
+    console.log('=== TRANSCRIPTION ERROR ===');
     console.error('Transcription error details:', {
       message: err.message,
       status: err.status,
-      error: err.error,
+      statusCode: err.statusCode || err.code,
+      type: err.type,
+      headers: err.headers,
+      errorBody: err.error,
     });
-    throw new Error(`Failed to transcribe audio: ${err.message}`);
+
+    // Provide more helpful error messages
+    let errorMsg = err.message;
+    if (err.status === 401 || err.message.includes('401')) {
+      errorMsg = 'OpenAI authentication failed. Check your API key.';
+    } else if (err.status === 429) {
+      errorMsg = 'Rate limit exceeded. Please try again in a moment.';
+    } else if (err.message.includes('timeout')) {
+      errorMsg = 'Transcription request timed out. Please try again.';
+    } else if (err.message.includes('network') || err.message.includes('ECONNREFUSED')) {
+      errorMsg = 'Network error. Check your internet connection.';
+    }
+
+    throw new Error(`Failed to transcribe audio: ${errorMsg}`);
   }
 };
 

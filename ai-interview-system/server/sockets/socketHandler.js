@@ -103,36 +103,81 @@ const initializeSocketHandlers = (io) => {
         }
 
         let transcribedText = textFallback || '';
+        let transcriptionSource = textFallback ? 'manual_text' : 'none';
+
+        // Set a timeout for the entire processing
+        const processingTimeout = setTimeout(() => {
+          console.warn('Processing timeout - taking longer than expected');
+          socket.emit('warning', { message: 'Processing is taking longer than expected. Still working...' });
+        }, 15000);
 
         // Transcribe audio if provided
         if (audioData && audioData.length > 0) {
           try {
             socket.emit('transcribing', { status: 'Processing your audio...' });
 
+            console.log('Attempting transcription...', { 
+              audioDataLength: audioData.length,
+              hasTextFallback: !!textFallback 
+            });
+
             // audioData is base64 encoded
             const audioBuffer = Buffer.from(audioData, 'base64');
-            transcribedText = await transcribeAudio(audioBuffer, 'audio/webm');
+            console.log('Audio buffer created:', { bufferSize: audioBuffer.length });
+            
+            // Attempt transcription
+            try {
+              transcribedText = await transcribeAudio(audioBuffer, 'audio/webm');
+              transcriptionSource = 'whisper_ai';
+              console.log('Transcription successful:', { text: transcribedText.substring(0, 100) });
 
-            // Send live transcript
-            socket.emit('live_transcript', { text: transcribedText, questionIndex });
+              // Send live transcript
+              socket.emit('live_transcript', { text: transcribedText, questionIndex });
+            } catch (transcribeErr) {
+              console.error('Transcription error:', transcribeErr.message);
+              throw transcribeErr;
+            }
           } catch (transcribeErr) {
-            console.error('Transcription failed:', transcribeErr);
-            if (!textFallback) {
-              socket.emit('error', { message: 'Failed to transcribe audio. Please try the text fallback.' });
+            console.error('Transcription failed:', {
+              error: transcribeErr.message,
+              hasTextFallback: !!textFallback,
+              apiKeyConfigured: !!process.env.OPENAI_API_KEY && !process.env.OPENAI_API_KEY.includes('your-actual'),
+            });
+
+            // If we have a text fallback, use it
+            if (textFallback && textFallback.trim().length >= 3) {
+              console.log('Using text fallback due to transcription failure');
+              transcribedText = textFallback;
+              transcriptionSource = 'manual_text';
+              socket.emit('live_transcript', { 
+                text: transcribedText, 
+                questionIndex,
+                source: 'text_fallback',
+                note: 'Using text fallback due to transcription error'
+              });
+            } else {
+              // No fallback available and transcription failed
+              clearTimeout(processingTimeout);
+              socket.emit('error', { 
+                message: 'Failed to transcribe audio. Please try the text fallback or refresh and try again.' 
+              });
               return;
             }
-            // Use text fallback if transcription fails
           }
         }
 
         if (!transcribedText || transcribedText.trim().length < 3) {
+          clearTimeout(processingTimeout);
           socket.emit('error', { message: 'No answer detected. Please speak clearly or type your answer.' });
           return;
         }
 
         // Get interview for context
         const interview = await Interview.findOne({ sessionId, userId: socket.userId });
-        if (!interview) return;
+        if (!interview) {
+          clearTimeout(processingTimeout);
+          return;
+        }
 
         const question = interview.questions[questionIndex];
 
@@ -156,6 +201,7 @@ const initializeSocketHandlers = (io) => {
             duration: duration || 30,
           },
           transcript: transcribedText,
+          source: transcriptionSource,
         });
 
         // AI analysis (async)
@@ -181,6 +227,7 @@ const initializeSocketHandlers = (io) => {
           questionIndex,
           question: question.text,
           transcribedText,
+          transcriptionSource,
           duration: duration || 30,
           wpm: speechMetrics.wpm,
           fillerWords: speechMetrics.fillerWords,
@@ -196,12 +243,15 @@ const initializeSocketHandlers = (io) => {
         }
         await interview.save();
 
+        clearTimeout(processingTimeout);
+
         // Send complete analysis
         socket.emit('answer_analyzed', {
           questionIndex,
           transcript: transcribedText,
           analysis: aiAnalysis,
           speechMetrics,
+          source: transcriptionSource,
         });
 
       } catch (err) {
